@@ -8,14 +8,6 @@ The solution follows a strict separation of responsibilities:
 
 The LLM is used only to understand operator instructions. All energy calculations, operational constraints, validation, and cost optimization are performed deterministically in PHP.
 
-### Live API
-
-**Live Base URL**
-
-```text
-https://YOUR-LIVE-DOMAIN.com
-```
-
 ---
 
 # Problem Overview
