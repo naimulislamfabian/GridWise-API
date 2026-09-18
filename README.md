@@ -1002,7 +1002,7 @@ Returned aggregate values are calculated directly from the final hourly plan.
 **Members:**
 
 ```text
-1. Tasin Haque
+1. Tahmidul Haque Tasin
 2. Naimul Islam Fabian
 3. Irfan Ul Islam
 4. Promit Debnath
