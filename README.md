@@ -1,690 +1,113 @@
-# GridWise — LLM Assisted Smart Energy Optimization API
+# GridWise
 
-GridWise is an LLM-assisted energy scheduling API that interprets natural-language campus operator instructions and produces a valid, low-cost 24-hour energy schedule using grid electricity, rooftop solar generation, and battery energy storage.
+**LLM-assisted energy scheduling for a smarter campus.**
 
-The solution follows a strict separation of responsibilities:
+GridWise converts natural-language operator notes into a cost-optimized, 24-hour energy schedule using grid electricity, solar generation, and battery storage. An LLM interprets the notes; deterministic PHP code validates the resulting directives, solves the scheduling problem, and checks the final plan.
 
-**Natural-language operator notes → LLM interpretation → deterministic guardrails → directive application → mathematical optimization → independent schedule validation → JSON response**
+**Live API:** [gridwise-api.wasmer.app](https://gridwise-api.wasmer.app/)
 
-The LLM is used only to understand operator instructions. All energy calculations, operational constraints, validation, and cost optimization are performed deterministically in PHP.
+**Health check:** [GET /health](https://gridwise-api.wasmer.app/health)
 
----
+This is a JSON API. The root URL has no web interface; use the endpoints below.
 
-# Problem Overview
+## Try the live API
 
-The application performs two distinct tasks.
+```bash
+curl https://gridwise-api.wasmer.app/health
+```
 
-## 1. Natural-Language Understanding
+```json
+{"status":"ok"}
+```
 
-An LLM interprets every `operator_notes` entry.
+To optimize a scenario, save the example below as `request.json`, then run:
 
-The LLM determines:
+```bash
+curl https://gridwise-api.wasmer.app/optimize-energy \
+  -H "Content-Type: application/json" \
+  --data-binary @request.json
+```
 
-- whether the note applies;
-- the directive type;
-- affected hours;
-- relevant numeric values; and
-- the required structured adjustment.
+On Windows PowerShell, use `curl.exe` and put the command on one line.
 
-The LLM does **not** optimize the electricity schedule.
-
-## 2. Mathematical Scheduling
-
-After the LLM output passes deterministic validation, the application converts the interpreted directives into mathematical constraints.
-
-A custom linear-programming solver then determines the lowest-cost valid operating schedule for all 24 hours.
-
----
-
-# Solution Architecture
+## How it works
 
 ```mermaid
-flowchart TD
-
-    A[POST /optimize-energy] --> B[Request Validator]
-
-    B --> C[LLM Operator Note Interpreter]
-
-    C --> D[Deterministic Guardrails]
-
-    D --> E[Directive Application]
-
-    E --> F[Energy Optimization Model]
-
-    F --> G[Pure PHP Simplex Solver]
-
-    G --> H[Independent Plan Validator]
-
-    H --> I[Totals and Summary]
-
-    I --> J[JSON Response]
-
-    D -->|Invalid LLM Output| C
+flowchart LR
+    A[Request validation] --> B[LLM interpretation]
+    B --> C[Directive guardrails]
+    C --> D[Constraint construction]
+    D --> E[Simplex optimization]
+    E --> F[Independent plan validation]
+    F --> G[JSON response]
 ```
 
-The key design principle is:
+1. Validate the scenario, 24 hourly forecasts, battery parameters, and operator notes.
+2. Interpret each note as one supported directive or a no-op.
+3. Check directive types, hours, numeric bounds, and required fields.
+4. Convert directives into solar availability, reserve floors, grid caps, and battery operating windows.
+5. Minimize grid electricity cost with a two-phase simplex solver implemented in PHP.
+6. Replay the returned schedule to verify energy balance, operating constraints, and the final battery state; calculate totals from the plan.
 
-> **The LLM interprets language. Deterministic code decides whether that interpretation is valid. The optimizer performs the mathematics.**
+The LLM does not calculate the schedule. Guardrails check the structure and bounds of its output, but do not independently prove that it understood a note correctly.
 
----
+## API reference
 
-# Processing Pipeline
+| Method | Route | Purpose |
+| --- | --- | --- |
+| `GET` | `/health` | Basic service health; does not test the LLM provider |
+| `POST` | `/optimize-energy` | Interpret notes and return an optimized daily schedule |
 
-A successful request follows this sequence:
+### Request
 
-```text
-Incoming JSON
-    ↓
-Request schema validation
-    ↓
-LLM interprets operator_notes
-    ↓
-Deterministic guardrail validation
-    ↓
-Applicable directives converted to constraints
-    ↓
-24-hour linear optimization problem constructed
-    ↓
-Pure-PHP Simplex solver
-    ↓
-Hourly schedule generated
-    ↓
-Independent schedule replay and validation
-    ↓
-Totals recalculated
-    ↓
-JSON response
-```
+The request must contain exactly these four fields:
 
-This separation prevents malformed or hallucinated model output from directly affecting the mathematical scheduling layer.
+| Field | Requirements |
+| --- | --- |
+| `scenario_id` | Non-empty string returned unchanged in the response |
+| `operator_notes` | Array of 1–3 non-empty strings |
+| `hours` | Exactly 24 entries, with each integer hour from `0` to `23` present once |
+| `battery` | Battery capacity, initial energy, minimum reserve, and hourly charge/discharge limits |
 
----
+Each hour requires `hour`, `demand_kwh`, `solar_kwh`, and `tariff_bdt_per_kwh`. Energy and tariff values must be finite, non-negative numbers. Hours may arrive out of order; the service sorts them.
 
-# API Endpoints
+The battery requires all five fields shown below. Initial energy and minimum reserve must not exceed capacity, and initial energy must be at least the minimum reserve. Extra fields are rejected at the request, hour, and battery levels.
 
-The service exposes exactly two primary endpoints.
+### Example request
 
-## Health Check
-
-```http
-GET /health
-```
-
-Successful response:
+This scenario has constant demand, daytime solar, higher evening tariffs, and a restriction on evening battery charging.
 
 ```json
 {
-  "status": "ok"
-}
-```
-
----
-
-## Energy Optimization
-
-```http
-POST /optimize-energy
-```
-
-Request header:
-
-```http
-Content-Type: application/json
-```
-
-The endpoint:
-
-1. validates the request;
-2. interprets every operator note using the configured LLM;
-3. validates the LLM output;
-4. applies valid directives;
-5. solves the optimization problem;
-6. independently validates the final schedule; and
-7. returns the complete result.
-
----
-
-# Request Schema
-
-A valid request contains exactly four top-level fields:
-
-```json
-{
-  "scenario_id": "string",
-  "operator_notes": [],
-  "hours": [],
-  "battery": {}
-}
-```
-
-## `scenario_id`
-
-A synthetic scenario identifier.
-
-Example:
-
-```json
-"scenario_id": "SAMPLE-01"
-```
-
----
-
-## `operator_notes`
-
-Must contain between **1 and 3 non-empty strings**.
-
-Example:
-
-```json
-"operator_notes": [
-  "Solar output will drop to about 20% from 1 PM to 3 PM.",
-  "The cafeteria menu changes tomorrow."
-]
-```
-
----
-
-## `hours`
-
-Must contain exactly **24 entries**, representing hours `0` through `23`.
-
-Each entry contains:
-
-```json
-{
-  "hour": 0,
-  "demand_kwh": 90,
-  "solar_kwh": 0,
-  "tariff_bdt_per_kwh": 6
-}
-```
-
-Required fields:
-
-| Field                | Description               |
-| -------------------- | ------------------------- |
-| `hour`               | Integer from 0 to 23      |
-| `demand_kwh`         | Campus electricity demand |
-| `solar_kwh`          | Forecast solar generation |
-| `tariff_bdt_per_kwh` | Grid electricity price    |
-
-All numeric energy/tariff values must be finite and non-negative.
-
----
-
-## `battery`
-
-Example:
-
-```json
-{
-  "capacity_kwh": 220,
-  "initial_energy_kwh": 110,
-  "minimum_energy_kwh": 40,
-  "max_charge_kwh_per_hour": 50,
-  "max_discharge_kwh_per_hour": 50
-}
-```
-
-Required fields:
-
-| Field                        | Description                      |
-| ---------------------------- | -------------------------------- |
-| `capacity_kwh`               | Maximum battery storage capacity |
-| `initial_energy_kwh`         | Battery energy before hour 0     |
-| `minimum_energy_kwh`         | Base minimum battery reserve     |
-| `max_charge_kwh_per_hour`    | Maximum hourly charge            |
-| `max_discharge_kwh_per_hour` | Maximum hourly discharge         |
-
----
-
-# Response Schema
-
-A successful response contains:
-
-```json
-{
-  "scenario_id": "...",
-  "directive_interpretation": [],
-  "hourly_plan": [],
-  "total_grid_kwh": 0,
-  "total_cost_bdt": 0,
-  "peak_grid_kwh": 0,
-  "plan_summary": "..."
-}
-```
-
----
-
-## `directive_interpretation`
-
-Contains exactly one entry for every operator note.
-
-Each entry contains:
-
-```json
-{
-  "note_index": 0,
-  "applies": true,
-  "directive_type": "solar_reduction",
-  "structured_adjustment": {
-    "hours": [12, 13],
-    "factor": 0.25
-  },
-  "explanation": "Solar generation is reduced during the panel-cleaning period."
-}
-```
-
----
-
-## `hourly_plan`
-
-Contains exactly 24 entries.
-
-Each entry contains:
-
-```json
-{
-  "hour": 0,
-  "grid_kwh": 90,
-  "solar_used_kwh": 0,
-  "battery_action": "idle",
-  "battery_kwh": 0,
-  "battery_energy_after_kwh": 110
-}
-```
-
-`battery_action` is exactly one of:
-
-```text
-charge
-discharge
-idle
-```
-
----
-
-## Aggregate Values
-
-### `total_grid_kwh`
-
-Sum of all hourly grid imports.
-
-### `total_cost_bdt`
-
-Calculated as:
-
-```text
-Σ grid_kwh[h] × tariff_bdt_per_kwh[h]
-```
-
-### `peak_grid_kwh`
-
-Maximum `grid_kwh` value among all 24 hours.
-
-### `plan_summary`
-
-Short human-readable description of the final scheduling strategy.
-
----
-
-# HTTP Status Codes
-
-|  Code | Meaning                                          |
-| ----: | ------------------------------------------------ |
-| `200` | Successful health or optimization response       |
-| `400` | Malformed JSON or structurally invalid request   |
-| `404` | Unknown endpoint                                 |
-| `422` | Scenario cannot be safely optimized or validated |
-| `500` | Controlled internal or LLM-provider failure      |
-
-The service is designed to fail safely.
-
-Malformed model output is never silently converted into an unsupported energy constraint.
-
----
-
-# Project Structure
-
-```text
-/
-├── index.php
-├── .htaccess
-│
-├── src/
-│   ├── App.php
-│   ├── autoload.php
-│   ├── Compat.php
-│   ├── Config.php
-│   ├── Directives.php
-│   ├── Guardrails.php
-│   ├── Optimizer.php
-│   ├── PlanValidator.php
-│   ├── RequestValidator.php
-│   ├── Simplex.php
-│   │
-│   └── LLM/
-│       └── Interpreter.php
-│
-└── public/
-    └── router.php
-```
-
-A local `.env` file is also used for configuration but **must not be committed to the public repository**.
-
----
-
-# LLM Integration
-
-The application supports language models through the configured provider.
-
-For the current Gemini setup, Google's OpenAI-compatible API can be used.
-
-Example configuration:
-
-```dotenv
-LLM_PROVIDER=openai_compat
-LLM_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai
-LLM_API_KEY=YOUR_GEMINI_API_KEY
-LLM_MODEL=YOUR_GEMINI_MODEL
-```
-
-The interpreter calls:
-
-```text
-/chat/completions
-```
-
-for third-party OpenAI-compatible APIs.
-
-The LLM receives:
-
-1. a strict system prompt defining the six supported directives;
-2. battery capacity/context; and
-3. the operator notes.
-
-Example:
-
-```text
-Battery context:
-- capacity_kwh: 220
-- initial_energy_kwh: 110
-- base minimum_energy_kwh: 40
-
-Operator notes:
-[0] Facilities will wash the rooftop solar panels from noon until 2 PM.
-[1] The sports office moved next month's registration deadline.
-```
-
-The model is instructed to return only structured JSON.
-
-Example:
-
-```json
-{
-  "directive_interpretation": [
-    {
-      "note_index": 0,
-      "applies": true,
-      "directive_type": "solar_reduction",
-      "structured_adjustment": {
-        "hours": [12, 13],
-        "factor": 0.25
-      },
-      "explanation": "Solar availability is reduced during panel cleaning."
-    },
-    {
-      "note_index": 1,
-      "applies": false,
-      "directive_type": "no_op",
-      "structured_adjustment": null,
-      "explanation": "The note does not affect the current energy schedule."
-    }
-  ]
-}
-```
-
-This JSON is still considered untrusted until `Guardrails.php` validates it.
-
----
-
-# LLM Repair Mechanism
-
-The model can occasionally return syntactically valid JSON that does not satisfy the exact GridWise schema.
-
-For example:
-
-```json
-{
-  "hours": [15, 14]
-}
-```
-
-This fails because hours must be ascending.
-
-When configured with:
-
-```dotenv
-LLM_REPAIR_ATTEMPTS=1
-```
-
-the application can send the deterministic validation reason back to the LLM and request a corrected JSON response.
-
-If the repaired response also fails validation, the application stops safely rather than inventing a directive.
-
----
-
-# Deterministic Guardrails
-
-LLM output is never trusted directly.
-
-The guardrail layer verifies the exact GridWise contract before any directive reaches the mathematical optimizer.
-
-Examples of rejected model output include:
-
-```text
-unsupported directive type
-missing operator-note interpretation
-duplicate note index
-incorrect note order
-hours outside 0–23
-duplicate hours
-unsorted hours
-solar factor greater than 1
-negative grid cap
-battery reserve above capacity
-no_op with applies=true
-extra JSON fields
-missing required fields
-```
-
-This architecture ensures that language-model errors cannot silently modify the energy model.
-
----
-
-# Installation
-
-## Requirements
-
-Minimum recommended environment:
-
-```text
-PHP 8.0+
-Apache 2.x
-mod_rewrite enabled
-allow_url_fopen enabled
-OpenSSL enabled
-Internet access to the configured LLM provider
-```
-
-No database is required.
-
-No Composer installation is required.
-
-No Node.js installation is required.
-
-No Python installation is required.
-
----
-
-# Environment Configuration
-
-Create a file named:
-
-```text
-.env
-```
-
-in the project root.
-
-Example Gemini configuration:
-
-```dotenv
-LLM_PROVIDER=openai_compat
-LLM_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai
-LLM_API_KEY=YOUR_GEMINI_API_KEY
-LLM_MODEL=YOUR_GEMINI_MODEL
-
-LLM_TIMEOUT_SECONDS=8
-LLM_REPAIR_ATTEMPTS=1
-
-LLM_CACHE_SIZE=0
-
-APP_DEBUG=false
-```
-
-## Environment Variables
-
-| Variable              | Description                                                          |
-| --------------------- | -------------------------------------------------------------------- |
-| `LLM_PROVIDER`        | Your LLM Provider Name                                               |
-| `LLM_BASE_URL`        | LLM provider base URL                                                |
-| `LLM_API_KEY`         | Hosted-model API key                                                 |
-| `LLM_MODEL`           | Model identifier                                                     |
-| `LLM_TIMEOUT_SECONDS` | Maximum provider request timeout                                     |
-| `LLM_REPAIR_ATTEMPTS` | Number of model-output repair attempts, `0–2`                        |
-| `LLM_CACHE_SIZE`      | Cache-related configuration; set to `0` when caching is not required |
-| `LLM_CACHE_DIR`       | Optional cache directory configuration                               |
-| `APP_DEBUG`           | Enables internal provider error reason in API responses when true    |
-
-For production:
-
-```dotenv
-APP_DEBUG=false
-```
-
-Never expose detailed provider errors publicly.
-
----
-
-# Testing the API
-
-## Health Check
-
-Using a browser:
-
-```text
-http://localhost/health
-```
-
-Using curl:
-
-```bash
-curl http://localhost/health
-```
-
-Expected response:
-
-```json
-{
-  "status": "ok"
-}
-```
-
-For the deployed server:
-
-```bash
-curl https://YOUR-LIVE-DOMAIN.com/health
-```
-
----
-
-# Public Sample Test
-
-The following request corresponds to the public solar-cleaning example.
-
-````json
-{
-  "scenario_id": "SAMPLE-01",
+  "scenario_id": "CAMPUS-01",
   "operator_notes": [
-    "Facilities will wash the rooftop solar panels from noon until 2 PM. During cleaning, usable solar should be treated as roughly 25% of the forecast.",
-    "The sports office moved next month's registration deadline."
+    "Do not charge the battery between 6 PM and 9 PM."
   ],
   "hours": [
-    { "hour": 0, "demand_kwh": 90, "solar_kwh": 0, "tariff_bdt_per_kwh": 6 },
-    { "hour": 1, "demand_kwh": 85, "solar_kwh": 0, "tariff_bdt_per_kwh": 6 },
-    { "hour": 2, "demand_kwh": 80, "solar_kwh": 0, "tariff_bdt_per_kwh": 5 },
-    { "hour": 3, "demand_kwh": 80, "solar_kwh": 0, "tariff_bdt_per_kwh": 5 },
-    { "hour": 4, "demand_kwh": 85, "solar_kwh": 0, "tariff_bdt_per_kwh": 5 },
-    { "hour": 5, "demand_kwh": 95, "solar_kwh": 0, "tariff_bdt_per_kwh": 6 },
-    { "hour": 6, "demand_kwh": 110, "solar_kwh": 5, "tariff_bdt_per_kwh": 8 },
-    { "hour": 7, "demand_kwh": 130, "solar_kwh": 20, "tariff_bdt_per_kwh": 10 },
-    { "hour": 8, "demand_kwh": 150, "solar_kwh": 50, "tariff_bdt_per_kwh": 12 },
-    { "hour": 9, "demand_kwh": 165, "solar_kwh": 90, "tariff_bdt_per_kwh": 14 },
-    {
-      "hour": 10,
-      "demand_kwh": 175,
-      "solar_kwh": 130,
-      "tariff_bdt_per_kwh": 16
-    },
-    {
-      "hour": 11,
-      "demand_kwh": 180,
-      "solar_kwh": 160,
-      "tariff_bdt_per_kwh": 16
-    },
-    {
-      "hour": 12,
-      "demand_kwh": 185,
-      "solar_kwh": 180,
-      "tariff_bdt_per_kwh": 15
-    },
-    {
-      "hour": 13,
-      "demand_kwh": 180,
-      "solar_kwh": 170,
-      "tariff_bdt_per_kwh": 14
-    },
-    {
-      "hour": 14,
-      "demand_kwh": 170,
-      "solar_kwh": 140,
-      "tariff_bdt_per_kwh": 13
-    },
-    {
-      "hour": 15,
-      "demand_kwh": 165,
-      "solar_kwh": 90,
-      "tariff_bdt_per_kwh": 14
-    },
-    {
-      "hour": 16,
-      "demand_kwh": 170,
-      "solar_kwh": 45,
-      "tariff_bdt_per_kwh": 18
-    },
-    {
-      "hour": 17,
-      "demand_kwh": 185,
-      "solar_kwh": 10,
-      "tariff_bdt_per_kwh": 22
-    },
-    { "hour": 18, "demand_kwh": 205, "solar_kwh": 0, "tariff_bdt_per_kwh": 28 },
-    { "hour": 19, "demand_kwh": 215, "solar_kwh": 0, "tariff_bdt_per_kwh": 30 },
-    { "hour": 20, "demand_kwh": 205, "solar_kwh": 0, "tariff_bdt_per_kwh": 26 },
-    { "hour": 21, "demand_kwh": 175, "solar_kwh": 0, "tariff_bdt_per_kwh": 18 },
-    { "hour": 22, "demand_kwh": 135, "solar_kwh": 0, "tariff_bdt_per_kwh": 10 },
-    { "hour": 23, "demand_kwh": 105, "solar_kwh": 0, "tariff_bdt_per_kwh": 7 }
+    { "hour": 0, "demand_kwh": 100, "solar_kwh": 0, "tariff_bdt_per_kwh": 6 },
+    { "hour": 1, "demand_kwh": 100, "solar_kwh": 0, "tariff_bdt_per_kwh": 6 },
+    { "hour": 2, "demand_kwh": 100, "solar_kwh": 0, "tariff_bdt_per_kwh": 6 },
+    { "hour": 3, "demand_kwh": 100, "solar_kwh": 0, "tariff_bdt_per_kwh": 6 },
+    { "hour": 4, "demand_kwh": 100, "solar_kwh": 0, "tariff_bdt_per_kwh": 6 },
+    { "hour": 5, "demand_kwh": 100, "solar_kwh": 0, "tariff_bdt_per_kwh": 6 },
+    { "hour": 6, "demand_kwh": 100, "solar_kwh": 10, "tariff_bdt_per_kwh": 8 },
+    { "hour": 7, "demand_kwh": 100, "solar_kwh": 25, "tariff_bdt_per_kwh": 8 },
+    { "hour": 8, "demand_kwh": 100, "solar_kwh": 50, "tariff_bdt_per_kwh": 10 },
+    { "hour": 9, "demand_kwh": 100, "solar_kwh": 75, "tariff_bdt_per_kwh": 10 },
+    { "hour": 10, "demand_kwh": 100, "solar_kwh": 100, "tariff_bdt_per_kwh": 12 },
+    { "hour": 11, "demand_kwh": 100, "solar_kwh": 120, "tariff_bdt_per_kwh": 12 },
+    { "hour": 12, "demand_kwh": 100, "solar_kwh": 140, "tariff_bdt_per_kwh": 12 },
+    { "hour": 13, "demand_kwh": 100, "solar_kwh": 120, "tariff_bdt_per_kwh": 12 },
+    { "hour": 14, "demand_kwh": 100, "solar_kwh": 100, "tariff_bdt_per_kwh": 12 },
+    { "hour": 15, "demand_kwh": 100, "solar_kwh": 75, "tariff_bdt_per_kwh": 12 },
+    { "hour": 16, "demand_kwh": 100, "solar_kwh": 50, "tariff_bdt_per_kwh": 16 },
+    { "hour": 17, "demand_kwh": 100, "solar_kwh": 20, "tariff_bdt_per_kwh": 20 },
+    { "hour": 18, "demand_kwh": 100, "solar_kwh": 0, "tariff_bdt_per_kwh": 28 },
+    { "hour": 19, "demand_kwh": 100, "solar_kwh": 0, "tariff_bdt_per_kwh": 30 },
+    { "hour": 20, "demand_kwh": 100, "solar_kwh": 0, "tariff_bdt_per_kwh": 26 },
+    { "hour": 21, "demand_kwh": 100, "solar_kwh": 0, "tariff_bdt_per_kwh": 18 },
+    { "hour": 22, "demand_kwh": 100, "solar_kwh": 0, "tariff_bdt_per_kwh": 10 },
+    { "hour": 23, "demand_kwh": 100, "solar_kwh": 0, "tariff_bdt_per_kwh": 7 }
   ],
   "battery": {
     "capacity_kwh": 220,
@@ -694,308 +117,180 @@ The following request corresponds to the public solar-cleaning example.
     "max_discharge_kwh_per_hour": 50
   }
 }
+```
 
----
+### Supported directives
 
-# Example Successful Response
+Each note maps to exactly one directive. Use separate notes for separate constraints, within the three-note limit.
 
-A response has the following structure:
+| Directive | Adjustment fields | Example note |
+| --- | --- | --- |
+| `solar_reduction` | `hours`, `factor` | “Only 20% of forecast solar remains from 1 PM to 3 PM.” |
+| `minimum_battery_reserve` | `hours`, `minimum_energy_kwh` | “Keep at least 120 kWh in reserve from 6 PM to 9 PM.” |
+| `no_charge_window` | `hours` | “Do not charge between 2 PM and 4 PM.” |
+| `no_discharge_window` | `hours` | “Do not discharge between midnight and 6 AM.” |
+| `max_grid_window` | `hours`, `max_grid_kwh` | “Limit grid import to 80 kWh per hour from 6 PM to 9 PM.” |
+| `no_op` | `null` adjustment | “The cafeteria menu changes tomorrow.” |
+
+Time windows include the start hour and exclude the end hour: 1 PM to 3 PM becomes `[13, 14]`. Solar `factor` is the fraction remaining, so an 80% reduction means `0.2`.
+
+Overlapping reserve requirements use the highest floor; overlapping grid caps use the lowest cap. Conflicting solar factors for the same hour are rejected.
+
+### Response
+
+A successful response contains:
+
+| Field | Contents |
+| --- | --- |
+| `scenario_id` | Original scenario identifier |
+| `directive_interpretation` | One interpretation per operator note, in input order |
+| `hourly_plan` | 24 entries ordered by hour |
+| `total_grid_kwh` | Sum of hourly grid imports |
+| `total_cost_bdt` | Sum of hourly grid imports multiplied by their tariffs |
+| `peak_grid_kwh` | Largest hourly grid import |
+| `plan_summary` | Short description of applied directives and the schedule |
+
+Each interpretation includes `note_index`, `applies`, `directive_type`, `structured_adjustment`, and `explanation`. A `no_op` has `applies: false` and a `null` adjustment.
+
+Each hourly plan entry has the following shape. This is an illustrative entry, not the complete response to the example request:
 
 ```json
 {
-  "scenario_id": "SAMPLE-01",
-  "directive_interpretation": [
-    {
-      "note_index": 0,
-      "applies": true,
-      "directive_type": "solar_reduction",
-      "structured_adjustment": {
-        "hours": [12, 13],
-        "factor": 0.25
-      },
-      "explanation": "Solar availability is reduced during the panel-cleaning window."
-    },
-    {
-      "note_index": 1,
-      "applies": false,
-      "directive_type": "no_op",
-      "structured_adjustment": null,
-      "explanation": "The note does not affect the current energy schedule."
-    }
-  ],
-  "hourly_plan": [
-    {
-      "hour": 0,
-      "grid_kwh": 90,
-      "solar_used_kwh": 0,
-      "battery_action": "idle",
-      "battery_kwh": 0,
-      "battery_energy_after_kwh": 110
-    }
-  ],
-  "total_grid_kwh": 2692.5,
-  "total_cost_bdt": 38365,
-  "peak_grid_kwh": 175,
-  "plan_summary": "Applied operator directives and produced a valid 24-hour minimum-grid-cost schedule while restoring the battery to its initial energy."
+  "hour": 0,
+  "grid_kwh": 100,
+  "solar_used_kwh": 0,
+  "battery_action": "idle",
+  "battery_kwh": 0,
+  "battery_energy_after_kwh": 110
 }
-````
-
-The real response contains all 24 hourly entries.
-
----
-
-# Security
-
-## API Keys
-
-API keys must never be committed to Git.
-
-Do not commit:
-
-```text
-.env
-API keys
-access tokens
-passwords
-provider credentials
 ```
 
-Recommended `.gitignore` entry:
+`battery_action` is `charge`, `discharge`, or `idle`; `battery_kwh` is the non-negative magnitude of that action. Energy values and aggregate totals are rounded to six decimal places.
 
-```gitignore
-.env
-.env.*
-!.env.example
-```
+### Errors
 
----
+| Status | Meaning |
+| --- | --- |
+| `400` | Malformed JSON or invalid request fields |
+| `404` | Unknown route or unsupported method |
+| `422` | Conflicting directives, infeasible optimization, or failed final plan validation |
+| `500` | LLM interpretation/provider failure or an internal error |
 
-# Error Handling
-
-## Invalid JSON / Request
-
-Response:
-
-```http
-400 Bad Request
-```
-
-Example:
+Errors return a JSON object such as:
 
 ```json
-{
-  "detail": "invalid request"
-}
+{"detail":"scenario is not safely optimizable"}
 ```
 
----
+## Run locally
 
-## LLM Interpretation Failure
+### Requirements
 
-Response:
+- PHP 8.0 or newer, with OpenSSL and `allow_url_fopen` enabled for provider requests.
+- Access to a configured LLM provider: an OpenAI-compatible service or Ollama.
+- Apache with `mod_rewrite` for the Apache setup below.
 
-```http
-500 Internal Server Error
-```
+No database, Composer packages, Node.js, or Python are required by the application.
 
-Production example:
+### Configuration
 
-```json
-{
-  "detail": "operator-note interpretation failed safely"
-}
-```
-
-With local debugging enabled, an additional `reason` may be returned.
-
----
-
-## Infeasible / Invalid Optimization Scenario
-
-Response:
-
-```http
-422 Unprocessable Entity
-```
-
-Example:
-
-```json
-{
-  "detail": "scenario is not safely optimizable"
-}
-```
-
----
-
-## Unknown Endpoint
-
-Response:
-
-```http
-404 Not Found
-```
-
-Example:
-
-```json
-{
-  "detail": "not found"
-}
-```
-
----
-
-# Performance and Reliability
-
-The mathematical optimizer executes locally in PHP and does not depend on an external optimization service.
-
-The largest variable latency is normally the LLM provider request.
-
-Recommended production configuration:
+Create `.env` in the repository root:
 
 ```dotenv
-LLM_TIMEOUT_SECONDS=5
+LLM_PROVIDER=openai_compat
+LLM_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai
+LLM_API_KEY=your_api_key
+LLM_MODEL=your_model_id
+LLM_TIMEOUT_SECONDS=8
 LLM_REPAIR_ATTEMPTS=1
 APP_DEBUG=false
 ```
 
-Before submission, benchmark:
+Use a model available through your provider. Existing process environment variables take precedence over `.env`.
+
+| Variable | Purpose / default |
+| --- | --- |
+| `LLM_PROVIDER` | `openai_compat` (default) or `ollama` |
+| `LLM_BASE_URL` | Provider base URL; defaults to `https://api.openai.com/v1` or `http://localhost:11434`, respectively |
+| `LLM_MODEL` | Required model identifier |
+| `LLM_API_KEY` | Required for `openai_compat` |
+| `LLM_TIMEOUT_SECONDS` | Per-provider-call timeout, greater than 0 and at most 25 seconds; default `8` |
+| `LLM_REPAIR_ATTEMPTS` | Additional attempts after directive-schema validation fails; default `1`, maximum `2` |
+| `APP_DEBUG` | Adds an interpretation failure reason to error responses when enabled; default `false` |
+
+For Ollama, set `LLM_PROVIDER=ollama`, `LLM_BASE_URL=http://localhost:11434`, and `LLM_MODEL` to an installed model name. An API key is not required.
+
+### Apache / XAMPP
+
+Place the project in your document root, enable `mod_rewrite`, and allow `.htaccess` rewrite rules. With this repository at `C:\xampp\htdocs`, start Apache and visit:
 
 ```text
-GET /health
-POST /optimize-energy
+http://localhost/health
 ```
 
-under repeated requests.
+If installed in a subfolder, include that folder in the URL, for example `http://localhost/gridwise/health`.
 
-The final public deployment should remain available for repeated judge calls.
+### PHP development server
 
-The team is responsible for:
+From the repository root:
+
+```bash
+php -S 127.0.0.1:8000 index.php
+```
+
+Then request `http://127.0.0.1:8000/health`. On XAMPP, use `C:\xampp\php\php.exe` if PHP is not on your PATH. Use the root `index.php` as the router; the current `public/router.php` points to a missing file.
+
+### Deployment notes
+
+Keep credentials out of Git and configure the web server to deny access to `.env`, `.git`, and backup archives. The supplied `.htaccess` only routes requests; it does not protect those files. Keep `APP_DEBUG=false` for public deployments.
+
+The application has no built-in authentication or rate limiting. Provider calls can incur usage costs, and the timeout applies to each call rather than the whole request.
+
+## Optimization model and limits
+
+The objective is to minimize:
 
 ```text
-LLM API availability
-API quota
-provider rate limits
-API credentials
-network connectivity
-deployment availability
+sum(grid_kwh[h] * tariff_bdt_per_kwh[h]) for h = 0..23
 ```
 
----
+The model enforces hourly energy balance, available solar, battery capacity and reserve, charge/discharge rates, applicable operator directives, and end-of-day battery energy equal to the initial energy.
 
-# Validation Philosophy
+It assumes one-hour intervals and lossless battery storage. It does not model battery degradation, grid export, demand shifting, or forecast uncertainty. Peak grid usage is reported but is not a separate optimization objective.
 
-The application intentionally performs validation at multiple layers.
+Current implementation limitations:
+
+- JSON that parses but fails directive validation can trigger a repair attempt. Malformed model JSON and provider failures terminate the request without that repair loop.
+- Setting `LLM_REPAIR_ATTEMPTS=0` currently falls back to `1` because of configuration parsing.
+- Cache helpers and cache settings exist, but interpretation does not use them; repeated requests still call the provider.
+- There is no committed automated test suite or CI workflow.
+
+## Project structure
 
 ```text
-Request
-  ↓
-RequestValidator
-  ↓
-LLM
-  ↓
-Guardrails
-  ↓
-Directives
-  ↓
-Optimizer
-  ↓
-PlanValidator
-  ↓
-Response
+index.php                 HTTP entry point and response serialization
+.htaccess                 Apache rewrite rules
+src/
+  App.php                 Request orchestration and error responses
+  Config.php              Environment loading and provider configuration
+  RequestValidator.php    Request schema and numeric validation
+  LLM/Interpreter.php     Provider calls, JSON parsing, and repair flow
+  Guardrails.php          Structured directive validation
+  Directives.php          Directive merging and constraint construction
+  Optimizer.php           24-hour linear program and plan construction
+  Simplex.php             Two-phase simplex solver
+  PlanValidator.php       Independent schedule replay and validation
+  Compat.php              PHP 8.0 array-list compatibility helper
+  autoload.php            GridWise namespace autoloader
+public/
+  router.php              Legacy development router; see local setup above
 ```
 
-This prevents a single component from becoming the sole source of truth.
+## Team
 
-For example:
+**TheNorseVoyage**
 
-- the LLM cannot directly schedule the battery;
-- the optimizer cannot silently violate a directive;
-- returned totals are recalculated from the generated plan; and
-- the final battery state is independently checked.
-
----
-
-# Numerical Precision
-
-Optimization results are normalized and rounded to avoid insignificant floating-point noise.
-
-The final validator uses a small numerical tolerance when replaying the schedule.
-
-Returned aggregate values are calculated directly from the final hourly plan.
-
----
-
-# Final Architecture Summary
-
-```text
-                    ┌─────────────────────┐
-                    │  Operator Notes     │
-                    │  Natural Language   │
-                    └──────────┬──────────┘
-                               │
-                               ▼
-                    ┌─────────────────────┐
-                    │        LLM          │
-                    │ Semantic Extraction │
-                    └──────────┬──────────┘
-                               │
-                               ▼
-                    ┌─────────────────────┐
-                    │ Deterministic       │
-                    │ Guardrails          │
-                    └──────────┬──────────┘
-                               │
-                               ▼
-                    ┌─────────────────────┐
-                    │ Directive           │
-                    │ Application         │
-                    └──────────┬──────────┘
-                               │
-         ┌─────────────────────┼─────────────────────┐
-         │                     │                     │
-         ▼                     ▼                     ▼
-      Demand                  Solar                Battery
-         │                     │                     │
-         └─────────────────────┼─────────────────────┘
-                               │
-                               ▼
-                    ┌─────────────────────┐
-                    │ Linear Programming  │
-                    │ Optimization Model  │
-                    └──────────┬──────────┘
-                               │
-                               ▼
-                    ┌─────────────────────┐
-                    │ Pure-PHP Simplex    │
-                    │ Solver              │
-                    └──────────┬──────────┘
-                               │
-                               ▼
-                    ┌─────────────────────┐
-                    │ Independent Final   │
-                    │ Plan Validation     │
-                    └──────────┬──────────┘
-                               │
-                               ▼
-                    ┌─────────────────────┐
-                    │ 24-Hour GridWise    │
-                    │ JSON Response       │
-                    └─────────────────────┘
-```
-
----
-
-# Authors
-
-**Team:** `TheNorseVoyage`
-
-**Members:**
-
-```text
-1. Tahmidul Haque Tasin
-2. Naimul Islam Fabian
-3. Irfan Ul Islam
-4. Promit Debnath
-```
+- Tahmidul Haque Tasin
+- Naimul Islam Fabian
+- Irfan Ul Islam
+- Promit Debnath
