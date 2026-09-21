@@ -182,17 +182,7 @@ Errors return a JSON object such as:
 {"detail":"scenario is not safely optimizable"}
 ```
 
-## Run locally
-
-### Requirements
-
-- PHP 8.0 or newer, with OpenSSL and `allow_url_fopen` enabled for provider requests.
-- Access to a configured LLM provider: an OpenAI-compatible service or Ollama.
-- Apache with `mod_rewrite` for the Apache setup below.
-
-No database, Composer packages, Node.js, or Python are required by the application.
-
-### Configuration
+## Environment configuration
 
 Create `.env` in the repository root:
 
@@ -219,26 +209,6 @@ Use a model available through your provider. Existing process environment variab
 | `APP_DEBUG` | Adds an interpretation failure reason to error responses when enabled; default `false` |
 
 For Ollama, set `LLM_PROVIDER=ollama`, `LLM_BASE_URL=http://localhost:11434`, and `LLM_MODEL` to an installed model name. An API key is not required.
-
-### Apache / XAMPP
-
-Place the project in your document root, enable `mod_rewrite`, and allow `.htaccess` rewrite rules. With this repository at `C:\xampp\htdocs`, start Apache and visit:
-
-```text
-http://localhost/health
-```
-
-If installed in a subfolder, include that folder in the URL, for example `http://localhost/gridwise/health`.
-
-### PHP development server
-
-From the repository root:
-
-```bash
-php -S 127.0.0.1:8000 index.php
-```
-
-Then request `http://127.0.0.1:8000/health`. On XAMPP, use `C:\xampp\php\php.exe` if PHP is not on your PATH. Use the root `index.php` as the router; the current `public/router.php` points to a missing file.
 
 ### Deployment notes
 
@@ -283,7 +253,7 @@ src/
   Compat.php              PHP 8.0 array-list compatibility helper
   autoload.php            GridWise namespace autoloader
 public/
-  router.php              Legacy development router; see local setup above
+  router.php              Legacy development router
 ```
 
 ## Team
